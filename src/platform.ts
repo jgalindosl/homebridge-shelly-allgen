@@ -1,4 +1,4 @@
-import type { API, Characteristic, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service } from 'homebridge';
+import type { API, Characteristic, DynamicPlatformPlugin, Logging, MatterAccessory, PlatformAccessory, PlatformConfig, Service } from 'homebridge';
 import { parseConfig, type DeviceConfig, type ShellyAllGenConfig } from './config.js';
 import { discoverMdns, type DiscoveredEndpoint } from './discovery/mdns.js';
 import { CoIoTListener } from './discovery/coiot.js';
@@ -17,6 +17,8 @@ export class ShellyAllGenPlatform implements DynamicPlatformPlugin {
   private readonly accessories = new Map<string, PlatformAccessory>();
   private readonly handlers = new Map<string, ShellyDeviceAccessory>();
   private readonly discovered = new Set<string>();
+  private readonly cachedMatterAccessories = new Map<string, MatterAccessory>();
+  private readonly claimedMatterAccessories = new Set<string>();
   private readonly discoveryAbort = new AbortController();
   private readonly filters: FilterTerms;
   public readonly coiot?: CoIoTListener;
@@ -53,6 +55,15 @@ export class ShellyAllGenPlatform implements DynamicPlatformPlugin {
     this.accessories.set(accessory.UUID, accessory);
   }
 
+  configureMatterAccessory(accessory: MatterAccessory): void {
+    this.cachedMatterAccessories.set(accessory.UUID, accessory);
+  }
+
+  /** Marks a Matter accessory as still in use so it survives stale-accessory removal. */
+  claimMatterAccessory(uuid: string): void {
+    this.claimedMatterAccessories.add(uuid);
+  }
+
   private async discoverDevices(): Promise<void> {
     const endpoints = new Map<string, DeviceConfig>();
     const macIndex = new Map<string, string>();
@@ -83,6 +94,25 @@ export class ShellyAllGenPlatform implements DynamicPlatformPlugin {
           this.accessories.delete(uuid);
         }
       }
+    }
+    await this.settleCachedMatterAccessories();
+  }
+
+  /** Matter accessories cached from an earlier run that no current component claimed are removed, or warned about when Matter is off. */
+  private async settleCachedMatterAccessories(): Promise<void> {
+    const unclaimed = [...this.cachedMatterAccessories.values()].filter(a => !this.claimedMatterAccessories.has(a.UUID));
+    if (unclaimed.length === 0) return;
+    const matter = this.api.matter;
+    if (!matter) {
+      this.log.warn('Matter is not enabled for this bridge; cached Shelly Matter accessories will not be updated.');
+      return;
+    }
+    if (!this.configValues.removeStaleAccessories) return;
+    try {
+      await matter.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, unclaimed);
+      for (const a of unclaimed) this.cachedMatterAccessories.delete(a.UUID);
+    } catch (error) {
+      this.log.warn('Failed to remove stale Matter accessories:', String(error));
     }
   }
 

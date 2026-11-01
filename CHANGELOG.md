@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- Matter energy metering. When Matter is enabled for the bridge (Homebridge 2.5 or later), each metered relay, switch, or light is also exposed as a Matter On/Off Outlet with Electrical Power Measurement (power, plus voltage and current where the device reports them) and Electrical Energy Measurement (imported, and exported when reported). Shelly EM/3EM channels become standalone Electrical Sensors. Controllers that read Matter 1.3 energy metrics, such as Apple Home on iOS 27, can show live power and energy. Matter on/off controls the same relay. Energy totals are pushed at most every 30 seconds, and a device that stops responding is marked unreachable with its live readings cleared. Cached Matter accessories that no component claims are removed when `removeStaleAccessories` is on. The HAP accessory is unchanged, so a home paired to both bridges shows the device twice.
+
 ## [0.3.0] — 2026-10-13
 
 ### Changed

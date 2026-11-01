@@ -2,6 +2,7 @@ import type { Characteristic, CharacteristicValue, PlatformAccessory, Service, W
 import type { GasSensorType, SwitchServiceType } from '../config.js';
 import type { ShellyAllGenPlatform } from '../platform.js';
 import type { NormalizedShellyDevice, ShellyClient, ShellyComponent } from '../shelly/types.js';
+import { hasMatterEnergy, matterEnergyUuid, ShellyMatterEnergy, type MatterEnergyKind } from './matter-energy.js';
 import { switchServiceType } from './service-kind.js';
 
 type SwitchComponent = Extract<ShellyComponent, { type: 'switch' }>;
@@ -39,6 +40,7 @@ export class ShellyDeviceAccessory {
   private readonly services = new Map<string, Service>();
   private readonly components = new Map<string, ShellyComponent>();
   private readonly outletKeys = new Set<string>();
+  private readonly matterEnergy = new Map<string, ShellyMatterEnergy>();
   /** How many of the device's components share each service label; drives the numeric name suffix. */
   private labelCounts = new Map<string, number>();
   private poll?: NodeJS.Timeout;
@@ -91,7 +93,52 @@ export class ShellyDeviceAccessory {
       else if (c.type === 'cover') this.configureCover(c);
       else if (c.type === 'meter') this.configureMeter(c);
       else if (c.type === 'sensor') this.configureSensor(c);
+      this.configureMatter(c);
     }
+  }
+
+  /**
+   * Mirror a metered switch, light, or meter into Matter when the bridge has
+   * Matter enabled, so controllers that read Matter energy metrics can show it.
+   */
+  private configureMatter(c: ShellyComponent) {
+    const matter = this.platform.api.matter;
+    if (!matter || this.matterEnergy.has(c.key)) return;
+    if (c.type !== 'switch' && c.type !== 'light' && c.type !== 'meter') return;
+    if (!hasMatterEnergy(c.state)) return;
+    const kind: MatterEnergyKind = c.type === 'meter' ? 'meter' : 'outlet';
+    const baseId = this.device.mac || this.device.id;
+    const uuid = matterEnergyUuid(matter, baseId, c.key);
+    const energy = new ShellyMatterEnergy(matter, this.platform.log, {
+      uuid,
+      displayName: this.serviceName(c),
+      kind,
+      serialNumber: `${baseId}:${c.key}`,
+      model: this.device.model,
+      firmware: this.device.firmware,
+      reading: c.state,
+      on: c.type === 'meter' ? undefined : c.state.on,
+      setOn: c.type === 'switch'
+        ? async on => { await this.client.setSwitch(c.id, on); this.patch(c.key, { on }); }
+        : c.type === 'light'
+          ? async on => { await this.client.setLight(c.id, { on }); this.patch(c.key, { on }); }
+          : undefined,
+    });
+    this.matterEnergy.set(c.key, energy);
+    this.platform.claimMatterAccessory(uuid);
+    void energy.register().then(() => this.updateMatter(c.key));
+  }
+
+  private updateMatter(key: string) {
+    const c = this.components.get(key);
+    const energy = this.matterEnergy.get(key);
+    if (!c || !energy || (c.type !== 'switch' && c.type !== 'light' && c.type !== 'meter')) return;
+    energy.rename(this.serviceName(c));
+    energy.update(c.state, c.type === 'meter' ? undefined : c.state.on);
+  }
+
+  private setMatterReachable(reachable: boolean) {
+    for (const energy of this.matterEnergy.values()) energy.setReachable(reachable);
   }
 
   /**
@@ -351,6 +398,7 @@ export class ShellyDeviceAccessory {
     this.offline = true;
     this.platform.log.info(`${this.label} is not responding after ${this.failedPolls} failed polls; reporting No Response.`);
     this.updateStatusFaults();
+    this.setMatterReachable(false);
   }
 
   /** A successful poll or realtime update clears the failure count and any offline state. */
@@ -360,6 +408,7 @@ export class ShellyDeviceAccessory {
     this.offline = false;
     this.platform.log.info(`${this.label} is responding again.`);
     this.updateStatusFaults();
+    this.setMatterReachable(true);
   }
 
   private sensorValue(key: string, kind: string): CharacteristicValue {
@@ -383,6 +432,7 @@ export class ShellyDeviceAccessory {
   }
 
   private updateCharacteristics(key: string) {
+    this.updateMatter(key);
     const c = this.components.get(key);
     const svc = this.services.get(key);
     if (!c || !svc) return;
