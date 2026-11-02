@@ -104,7 +104,7 @@ describe('ShellyDeviceAccessory Matter mirroring', () => {
   function withMatter(components: ShellyComponent[]) {
     const matter = fakeMatter();
     const platform = fakePlatform();
-    (platform.api as { matter?: unknown }).matter = matter;
+    (platform.api as unknown as { matter?: unknown }).matter = matter;
     const claimed: string[] = [];
     (platform as unknown as { claimMatterAccessory: (u: string) => void }).claimMatterAccessory = u => { claimed.push(u); };
     const result = createAccessory({ components, platform, device: { model: 'SNPL-00112EU' } });

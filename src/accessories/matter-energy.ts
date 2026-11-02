@@ -1,7 +1,37 @@
-import type { ClusterStateMap, Logger, MatterAPI, MatterAccessory } from 'homebridge';
+import type { API, Logger } from 'homebridge';
 import { PLATFORM_NAME, PLUGIN_NAME } from '../settings.js';
 
-type PowerMeasurement = Partial<ClusterStateMap['electricalPowerMeasurement']>;
+// Homebridge only ships Matter typings from 2.5, but this plugin still installs
+// on 2.0 (the Matter API is simply absent there). These structural types cover
+// the parts of `api.matter` used here so the build does not depend on them.
+export interface MatterAccessory {
+  UUID: string;
+  displayName: string;
+  deviceType: unknown;
+  serialNumber: string;
+  manufacturer: string;
+  model: string;
+  firmwareRevision: string;
+  context: Record<string, unknown>;
+  clusters: Record<string, Record<string, unknown>>;
+  handlers: Record<string, Record<string, () => Promise<void>>>;
+}
+
+export interface MatterAPI {
+  uuid: { generate(data: string): string };
+  deviceTypes: { OnOffOutlet: unknown; ElectricalSensor: unknown };
+  registerPlatformAccessories(plugin: string, platform: string, accessories: MatterAccessory[]): Promise<void>;
+  updatePlatformAccessories(accessories: MatterAccessory[]): Promise<void>;
+  unregisterPlatformAccessories(plugin: string, platform: string, accessories: { UUID: string }[]): Promise<void>;
+  updateAccessoryState(uuid: string, cluster: string, attributes: Record<string, unknown>): Promise<void>;
+}
+
+/** `api.matter` when the running Homebridge (2.5+) has Matter enabled for this bridge, otherwise undefined. */
+export function matterOf(api: API): MatterAPI | undefined {
+  return (api as unknown as { matter?: MatterAPI }).matter;
+}
+
+type PowerMeasurement = Partial<Record<'activePower' | 'voltage' | 'activeCurrent', number | null>>;
 
 /** The power/energy fields carried by switch, light, and meter component states (W, V, A, Wh). */
 export interface MatterEnergyReading {
@@ -67,7 +97,7 @@ export function matterEnergyUuid(matter: MatterAPI, baseId: string, componentKey
  * additional, best-effort view of the same component.
  */
 export class ShellyMatterEnergy {
-  readonly accessory: MatterAccessory<{ componentKey?: string }>;
+  readonly accessory: MatterAccessory;
   private online = true;
   private reportedEnergy?: number;
   private reportedExported?: number;
@@ -86,7 +116,7 @@ export class ShellyMatterEnergy {
 
     // A null attribute means "no measurement available"; declaring it is what
     // makes Homebridge compose the matching feature onto the endpoint.
-    const clusters: Record<string, Record<string, unknown>> = {};
+    const clusters: MatterAccessory['clusters'] = {};
     if (options.kind !== 'meter') clusters.onOff = { onOff: options.on ?? false };
     if (hasPower) {
       clusters.electricalPowerMeasurement = {
@@ -119,7 +149,7 @@ export class ShellyMatterEnergy {
       context: {},
       clusters,
       handlers: options.kind === 'meter' ? {} : { onOff: { on: () => handle(true), off: () => handle(false) } },
-    } as MatterAccessory<{ componentKey?: string }>;
+    };
   }
 
   /** Registers (or re-attaches to a cached) Matter accessory; state updates queue behind it. */

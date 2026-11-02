@@ -2,7 +2,7 @@ import type { Characteristic, CharacteristicValue, PlatformAccessory, Service, W
 import type { GasSensorType, SwitchServiceType } from '../config.js';
 import type { ShellyAllGenPlatform } from '../platform.js';
 import type { NormalizedShellyDevice, ShellyClient, ShellyComponent } from '../shelly/types.js';
-import { hasMatterEnergy, matterEnergyUuid, ShellyMatterEnergy, type MatterEnergyKind } from './matter-energy.js';
+import { hasMatterEnergy, matterEnergyUuid, matterOf, ShellyMatterEnergy, type MatterEnergyKind } from './matter-energy.js';
 import { switchServiceType } from './service-kind.js';
 
 type SwitchComponent = Extract<ShellyComponent, { type: 'switch' }>;
@@ -102,7 +102,7 @@ export class ShellyDeviceAccessory {
    * Matter enabled, so controllers that read Matter energy metrics can show it.
    */
   private configureMatter(c: ShellyComponent) {
-    const matter = this.platform.api.matter;
+    const matter = matterOf(this.platform.api);
     if (!matter || this.matterEnergy.has(c.key)) return;
     if (c.type !== 'switch' && c.type !== 'light' && c.type !== 'meter') return;
     if (!hasMatterEnergy(c.state)) return;

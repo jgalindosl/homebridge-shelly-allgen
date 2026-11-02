@@ -1,8 +1,9 @@
-import type { API, Characteristic, DynamicPlatformPlugin, Logging, MatterAccessory, PlatformAccessory, PlatformConfig, Service } from 'homebridge';
+import type { API, Characteristic, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service } from 'homebridge';
 import { parseConfig, type DeviceConfig, type ShellyAllGenConfig } from './config.js';
 import { discoverMdns, type DiscoveredEndpoint } from './discovery/mdns.js';
 import { CoIoTListener } from './discovery/coiot.js';
 import { ShellyDeviceAccessory, type AccessoryOptions } from './accessories/device-accessory.js';
+import { matterOf } from './accessories/matter-energy.js';
 import { createEveTypes, type EveTypes } from './accessories/eve.js';
 import { matchesDeviceFilters, matchesGlobalFilters, type FilterTerms } from './filters.js';
 import { readNormalizedDevice } from './shelly/client.js';
@@ -17,7 +18,7 @@ export class ShellyAllGenPlatform implements DynamicPlatformPlugin {
   private readonly accessories = new Map<string, PlatformAccessory>();
   private readonly handlers = new Map<string, ShellyDeviceAccessory>();
   private readonly discovered = new Set<string>();
-  private readonly cachedMatterAccessories = new Map<string, MatterAccessory>();
+  private readonly cachedMatterAccessories = new Map<string, { UUID: string }>();
   private readonly claimedMatterAccessories = new Set<string>();
   private readonly discoveryAbort = new AbortController();
   private readonly filters: FilterTerms;
@@ -55,7 +56,7 @@ export class ShellyAllGenPlatform implements DynamicPlatformPlugin {
     this.accessories.set(accessory.UUID, accessory);
   }
 
-  configureMatterAccessory(accessory: MatterAccessory): void {
+  configureMatterAccessory(accessory: { UUID: string }): void {
     this.cachedMatterAccessories.set(accessory.UUID, accessory);
   }
 
@@ -102,7 +103,7 @@ export class ShellyAllGenPlatform implements DynamicPlatformPlugin {
   private async settleCachedMatterAccessories(): Promise<void> {
     const unclaimed = [...this.cachedMatterAccessories.values()].filter(a => !this.claimedMatterAccessories.has(a.UUID));
     if (unclaimed.length === 0) return;
-    const matter = this.api.matter;
+    const matter = matterOf(this.api);
     if (!matter) {
       this.log.warn('Matter is not enabled for this bridge; cached Shelly Matter accessories will not be updated.');
       return;
