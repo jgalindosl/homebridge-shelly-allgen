@@ -2,7 +2,7 @@ import type { Characteristic, CharacteristicValue, PlatformAccessory, Service, W
 import type { GasSensorType, SwitchServiceType } from '../config.js';
 import type { ShellyAllGenPlatform } from '../platform.js';
 import type { NormalizedShellyDevice, ShellyClient, ShellyComponent } from '../shelly/types.js';
-import { hasMatterEnergy, matterEnergyUuid, matterOf, ShellyMatterEnergy, type MatterEnergyKind } from './matter-energy.js';
+import { hasMatterEnergy, matterEnergyUuid, matterOf, ShellyMatterEnergy } from './matter-energy.js';
 import { switchServiceType } from './service-kind.js';
 
 type SwitchComponent = Extract<ShellyComponent, { type: 'switch' }>;
@@ -98,7 +98,7 @@ export class ShellyDeviceAccessory {
   }
 
   /**
-   * Mirror a metered switch, light, or meter into Matter when the bridge has
+   * Mirror a metered switch, light, or meter into Matter as an outlet when the bridge has
    * Matter enabled, so controllers that read Matter energy metrics can show it.
    */
   private configureMatter(c: ShellyComponent) {
@@ -106,18 +106,15 @@ export class ShellyDeviceAccessory {
     if (!matter || this.matterEnergy.has(c.key)) return;
     if (c.type !== 'switch' && c.type !== 'light' && c.type !== 'meter') return;
     if (!hasMatterEnergy(c.state)) return;
-    const kind: MatterEnergyKind = c.type === 'meter' ? 'meter' : 'outlet';
     const baseId = this.device.mac || this.device.id;
     const uuid = matterEnergyUuid(matter, baseId, c.key);
     const energy = new ShellyMatterEnergy(matter, this.platform.log, {
       uuid,
       displayName: this.serviceName(c),
-      kind,
       serialNumber: `${baseId}:${c.key}`,
       model: this.device.model,
       firmware: this.device.firmware,
-      reading: c.state,
-      on: c.type === 'meter' ? undefined : c.state.on,
+      on: this.matterOn(c),
       setOn: c.type === 'switch'
         ? async on => { await this.client.setSwitch(c.id, on); this.patch(c.key, { on }); }
         : c.type === 'light'
@@ -129,12 +126,17 @@ export class ShellyDeviceAccessory {
     void energy.register().then(() => this.updateMatter(c.key));
   }
 
+  /** A meter channel has no relay, so its Matter outlet is on while it draws power. */
+  private matterOn(c: SwitchComponent | LightComponent | MeterComponent): boolean {
+    return c.type === 'meter' ? (c.state.power ?? 0) > 0 : c.state.on;
+  }
+
   private updateMatter(key: string) {
     const c = this.components.get(key);
     const energy = this.matterEnergy.get(key);
     if (!c || !energy || (c.type !== 'switch' && c.type !== 'light' && c.type !== 'meter')) return;
     energy.rename(this.serviceName(c));
-    energy.update(c.state, c.type === 'meter' ? undefined : c.state.on);
+    energy.update(c.state, this.matterOn(c));
   }
 
   private setMatterReachable(reachable: boolean) {

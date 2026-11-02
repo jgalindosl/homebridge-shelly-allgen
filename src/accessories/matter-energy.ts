@@ -19,7 +19,7 @@ export interface MatterAccessory {
 
 export interface MatterAPI {
   uuid: { generate(data: string): string };
-  deviceTypes: { OnOffOutlet: unknown; ElectricalSensor: unknown };
+  deviceTypes: { OnOffOutlet: unknown };
   registerPlatformAccessories(plugin: string, platform: string, accessories: MatterAccessory[]): Promise<void>;
   updatePlatformAccessories(accessories: MatterAccessory[]): Promise<void>;
   unregisterPlatformAccessories(plugin: string, platform: string, accessories: { UUID: string }[]): Promise<void>;
@@ -39,23 +39,16 @@ export interface MatterEnergyReading {
   voltage?: number;
   current?: number;
   energy?: number;
-  energyReturned?: number;
 }
-
-/** What a Shelly component becomes in Matter: a controllable outlet, or a standalone meter. */
-export type MatterEnergyKind = 'outlet' | 'meter';
 
 export interface MatterEnergyOptions {
   uuid: string;
   displayName: string;
-  kind: MatterEnergyKind;
   serialNumber: string;
   model: string;
   firmware?: string;
-  /** Initial readings; their shape decides which measurement attributes the endpoint declares. */
-  reading: MatterEnergyReading;
   on?: boolean;
-  /** Turns the relay/light on or off; absent for a meter. */
+  /** Turns the relay/light on or off; absent for a read-only meter channel, whose on/off just follows its power draw. */
   setOn?: (on: boolean) => Promise<void>;
 }
 
@@ -82,58 +75,32 @@ export function toMatterEnergy(energyWh: number): number {
 /** Whether a reading has anything Matter can report. */
 export function hasMatterEnergy(reading: MatterEnergyReading): boolean {
   return reading.power !== undefined || reading.voltage !== undefined || reading.current !== undefined
-    || reading.energy !== undefined || reading.energyReturned !== undefined;
+    || reading.energy !== undefined;
 }
 
 export function matterEnergyUuid(matter: MatterAPI, baseId: string, componentKey: string): string {
-  return matter.uuid.generate(`shelly:${baseId}:${componentKey}:matter`);
+  return matter.uuid.generate(`shelly:${baseId}:${componentKey}:matter-outlet`);
 }
 
 /**
- * Exposes one metered Shelly component to Matter so controllers that read
- * Matter 1.3 energy metrics (Apple Home on iOS 27) can show live power and
- * energy. Relays and lights become an outlet, and EM channels a standalone
- * Electrical Sensor. HAP stays the primary integration; this is an
- * additional, best-effort view of the same component.
+ * Exposes one metered Shelly component to Matter as an On/Off Outlet reporting
+ * power, voltage, current, and imported energy, so controllers that read Matter
+ * 1.3 energy metrics (Apple Home on iOS 27) can show them. HAP stays the primary
+ * integration; this is an additional, best-effort view of the same component.
  */
 export class ShellyMatterEnergy {
   readonly accessory: MatterAccessory;
   private online = true;
   private reportedEnergy?: number;
-  private reportedExported?: number;
   private energyReportedAt = 0;
   private registration: Promise<boolean> = Promise.resolve(false);
-  private readonly declared: { power: boolean; energy: boolean; exported: boolean };
 
   constructor(
     private readonly matter: MatterAPI,
     private readonly log: Logger,
     options: MatterEnergyOptions,
   ) {
-    const { reading } = options;
-    const hasPower = reading.power !== undefined || reading.voltage !== undefined || reading.current !== undefined;
-    this.declared = { power: hasPower, energy: reading.energy !== undefined, exported: reading.energyReturned !== undefined };
-
-    // A null attribute means "no measurement available"; declaring it is what
-    // makes Homebridge compose the matching feature onto the endpoint.
-    const clusters: MatterAccessory['clusters'] = {};
-    if (options.kind !== 'meter') clusters.onOff = { onOff: options.on ?? false };
-    if (hasPower) {
-      clusters.electricalPowerMeasurement = {
-        activePower: null,
-        ...(reading.voltage !== undefined ? { voltage: null } : {}),
-        ...(reading.current !== undefined ? { activeCurrent: null } : {}),
-      };
-    }
-    if (this.declared.energy || this.declared.exported) {
-      clusters.electricalEnergyMeasurement = {
-        ...(this.declared.energy ? { cumulativeEnergyImported: null } : {}),
-        ...(this.declared.exported ? { cumulativeEnergyExported: null } : {}),
-      };
-    }
-
-    const deviceType = options.kind === 'outlet' ? matter.deviceTypes.OnOffOutlet : matter.deviceTypes.ElectricalSensor;
-    const handle = async (on: boolean): Promise<void> => {
+    const handleOnOff = async (on: boolean): Promise<void> => {
       this.log.info(`Turning ${on ? 'on' : 'off'} ${options.displayName} (Matter)`);
       await options.setOn?.(on);
     };
@@ -141,14 +108,21 @@ export class ShellyMatterEnergy {
     this.accessory = {
       UUID: options.uuid,
       displayName: options.displayName,
-      deviceType,
-      serialNumber: options.serialNumber,
+      deviceType: matter.deviceTypes.OnOffOutlet,
+      serialNumber: options.serialNumber.slice(0, 32),
       manufacturer: 'Shelly',
-      model: options.model,
+      model: options.model.slice(0, 32),
       firmwareRevision: options.firmware ?? 'unknown',
       context: {},
-      clusters,
-      handlers: options.kind === 'meter' ? {} : { onOff: { on: () => handle(true), off: () => handle(false) } },
+      clusters: {
+        onOff: { onOff: options.on ?? false },
+        // null means "no measurement available"; declaring the attributes is
+        // what makes Homebridge compose the AC power and imported cumulative
+        // energy features onto the outlet endpoint.
+        electricalPowerMeasurement: { activePower: null, voltage: null, activeCurrent: null },
+        electricalEnergyMeasurement: { cumulativeEnergyImported: null },
+      },
+      handlers: { onOff: { on: () => handleOnOff(true), off: () => handleOnOff(false) } },
     };
   }
 
@@ -169,32 +143,21 @@ export class ShellyMatterEnergy {
   }
 
   /** Pushes the component's current state; energy totals are throttled to ENERGY_REPORT_INTERVAL_MS. */
-  update(reading: MatterEnergyReading, on?: boolean, now = Date.now()): void {
-    if (on !== undefined && this.accessory.clusters?.onOff) this.setState('onOff', { onOff: on });
+  update(reading: MatterEnergyReading, on: boolean, now = Date.now()): void {
+    this.setState('onOff', { onOff: on });
     if (!this.online) return;
 
-    if (this.declared.power) {
-      const power = toMatterPowerMeasurement(reading);
-      if (Object.keys(power).length > 0) this.setState('electricalPowerMeasurement', power);
-    }
+    const power = toMatterPowerMeasurement(reading);
+    if (Object.keys(power).length > 0) this.setState('electricalPowerMeasurement', power);
 
-    const energy = reading.energy !== undefined ? toMatterEnergy(reading.energy) : undefined;
-    const exported = reading.energyReturned !== undefined ? toMatterEnergy(reading.energyReturned) : undefined;
-    const changed = (this.declared.energy && energy !== undefined && energy !== this.reportedEnergy)
-      || (this.declared.exported && exported !== undefined && exported !== this.reportedExported);
-    const first = this.energyReportedAt === 0;
-    if (changed && (first || now - this.energyReportedAt >= ENERGY_REPORT_INTERVAL_MS)) {
-      this.energyReportedAt = now;
-      const attributes: Record<string, unknown> = {};
-      if (this.declared.energy && energy !== undefined) {
+    if (reading.energy !== undefined) {
+      const energy = toMatterEnergy(reading.energy);
+      const due = now - this.energyReportedAt >= ENERGY_REPORT_INTERVAL_MS;
+      if (energy !== this.reportedEnergy && (this.reportedEnergy === undefined || due)) {
         this.reportedEnergy = energy;
-        attributes.cumulativeEnergyImported = { energy };
+        this.energyReportedAt = now;
+        this.setState('electricalEnergyMeasurement', { cumulativeEnergyImported: { energy } });
       }
-      if (this.declared.exported && exported !== undefined) {
-        this.reportedExported = exported;
-        attributes.cumulativeEnergyExported = { energy: exported };
-      }
-      this.setState('electricalEnergyMeasurement', attributes);
     }
   }
 
@@ -203,12 +166,7 @@ export class ShellyMatterEnergy {
     if (this.online === reachable) return;
     this.online = reachable;
     this.setState('bridgedDeviceBasicInformation', { reachable });
-    if (!reachable && this.declared.power) this.setState('electricalPowerMeasurement', this.clearedPower());
-  }
-
-  private clearedPower(): PowerMeasurement {
-    const cluster = this.accessory.clusters?.electricalPowerMeasurement as PowerMeasurement | undefined;
-    return Object.fromEntries(Object.keys(cluster ?? NO_POWER).map(key => [key, null])) as PowerMeasurement;
+    if (!reachable) this.setState('electricalPowerMeasurement', NO_POWER);
   }
 
   private setState(cluster: string, attributes: Record<string, unknown>): void {

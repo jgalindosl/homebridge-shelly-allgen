@@ -7,7 +7,7 @@ import { createAccessory, fakePlatform } from './helpers/accessory.js';
 function fakeMatter() {
   return {
     uuid: { generate: (s: string) => `uuid:${s}` },
-    deviceTypes: { OnOffOutlet: 'outlet', OnOffLight: 'light', ElectricalSensor: 'sensor' },
+    deviceTypes: { OnOffOutlet: 'outlet' },
     registerPlatformAccessories: vi.fn(async () => {}),
     updatePlatformAccessories: vi.fn(async () => {}),
     updateAccessoryState: vi.fn(async () => {}),
@@ -31,34 +31,22 @@ describe('unit conversion', () => {
 
 describe('ShellyMatterEnergy', () => {
   const base = { uuid: 'u1', displayName: 'Plug', serialNumber: 'AA:relay:0', model: 'SNPL-00112EU' };
+  const create = (matter: ReturnType<typeof fakeMatter>) =>
+    new ShellyMatterEnergy(matter as unknown as MatterAPI, log, base);
 
-  it('declares only the measurements the component reports', () => {
-    const matter = fakeMatter();
-    const e = new ShellyMatterEnergy(matter as unknown as MatterAPI, log, { ...base, kind: 'outlet', reading: { power: 1, energy: 2 } });
+  it('is an outlet declaring power and imported energy', () => {
+    const e = create(fakeMatter());
     expect(e.accessory.deviceType).toBe('outlet');
     expect(e.accessory.clusters).toEqual({
       onOff: { onOff: false },
-      electricalPowerMeasurement: { activePower: null },
+      electricalPowerMeasurement: { activePower: null, voltage: null, activeCurrent: null },
       electricalEnergyMeasurement: { cumulativeEnergyImported: null },
     });
   });
 
-  it('exposes a meter as an electrical sensor with exported energy and no on/off', () => {
-    const matter = fakeMatter();
-    const e = new ShellyMatterEnergy(matter as unknown as MatterAPI, log, {
-      ...base, kind: 'meter', reading: { power: 1, voltage: 230, current: 1, energy: 2, energyReturned: 3 },
-    });
-    expect(e.accessory.deviceType).toBe('sensor');
-    expect(e.accessory.clusters).toEqual({
-      electricalPowerMeasurement: { activePower: null, voltage: null, activeCurrent: null },
-      electricalEnergyMeasurement: { cumulativeEnergyImported: null, cumulativeEnergyExported: null },
-    });
-    expect(e.accessory.handlers).toEqual({});
-  });
-
   it('throttles energy totals but not power', async () => {
     const matter = fakeMatter();
-    const e = new ShellyMatterEnergy(matter as unknown as MatterAPI, log, { ...base, kind: 'outlet', reading: { power: 1, energy: 1 } });
+    const e = create(matter);
     await e.register();
     e.update({ power: 5, energy: 1 }, true, 1_000);
     e.update({ power: 6, energy: 2 }, true, 2_000);
@@ -74,14 +62,14 @@ describe('ShellyMatterEnergy', () => {
 
   it('marks unreachable and clears power, then restores', async () => {
     const matter = fakeMatter();
-    const e = new ShellyMatterEnergy(matter as unknown as MatterAPI, log, { ...base, kind: 'outlet', reading: { power: 1, voltage: 230 } });
+    const e = create(matter);
     await e.register();
     e.setReachable(false);
     e.setReachable(true);
     await flush();
     expect(matter.updateAccessoryState.mock.calls.map(c => [c[1], c[2]])).toEqual([
       ['bridgedDeviceBasicInformation', { reachable: false }],
-      ['electricalPowerMeasurement', { activePower: null, voltage: null }],
+      ['electricalPowerMeasurement', { activePower: null, voltage: null, activeCurrent: null }],
       ['bridgedDeviceBasicInformation', { reachable: true }],
     ]);
   });
@@ -89,7 +77,7 @@ describe('ShellyMatterEnergy', () => {
   it('skips state updates when registration failed', async () => {
     const matter = fakeMatter();
     matter.registerPlatformAccessories.mockRejectedValueOnce(new Error('nope'));
-    const e = new ShellyMatterEnergy(matter as unknown as MatterAPI, log, { ...base, kind: 'outlet', reading: { power: 1 } });
+    const e = create(matter);
     await e.register();
     e.update({ power: 2 }, true);
     await flush();
@@ -115,7 +103,7 @@ describe('ShellyDeviceAccessory Matter mirroring', () => {
     const { matter, claimed, handler } = withMatter([relay, dry]);
     await flush();
     expect(matter.registerPlatformAccessories).toHaveBeenCalledTimes(1);
-    expect(claimed).toEqual(['uuid:shelly:AABBCCDDEEFF:relay:0:matter']);
+    expect(claimed).toEqual(['uuid:shelly:AABBCCDDEEFF:relay:0:matter-outlet']);
     handler.close();
   });
 
@@ -125,7 +113,7 @@ describe('ShellyDeviceAccessory Matter mirroring', () => {
     await accessory[0].handlers.onOff.on();
     expect(client.setSwitch).toHaveBeenCalledWith(0, true);
     await flush();
-    expect(matter.updateAccessoryState).toHaveBeenCalledWith('uuid:shelly:AABBCCDDEEFF:relay:0:matter', 'onOff', { onOff: true });
+    expect(matter.updateAccessoryState).toHaveBeenCalledWith('uuid:shelly:AABBCCDDEEFF:relay:0:matter-outlet', 'onOff', { onOff: true });
     handler.close();
   });
 
