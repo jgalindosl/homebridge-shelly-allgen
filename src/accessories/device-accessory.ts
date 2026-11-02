@@ -237,7 +237,7 @@ export class ShellyDeviceAccessory {
     }
     svc.getCharacteristic(this.platform.Characteristic.On)
       .onGet(this.online(() => this.getState(c.key, 'switch')?.on ?? false))
-      .onSet(async v => {
+      .onSet(async (v: CharacteristicValue) => {
         await this.client.setSwitch(c.id, v as boolean);
         this.patch(c.key, { on: v as boolean });
       });
@@ -255,10 +255,10 @@ export class ShellyDeviceAccessory {
     const svc = this.getService(this.platform.Service.Lightbulb, this.serviceName(c), c.key);
     svc.getCharacteristic(this.platform.Characteristic.On)
       .onGet(this.online(() => this.getState(c.key, 'light')?.on ?? false))
-      .onSet(async v => { await this.client.setLight(c.id, { on: v as boolean }); this.patch(c.key, { on: v as boolean }); });
+      .onSet(async (v: CharacteristicValue) => { await this.client.setLight(c.id, { on: v as boolean }); this.patch(c.key, { on: v as boolean }); });
     svc.getCharacteristic(this.platform.Characteristic.Brightness)
       .onGet(this.online(() => this.getState(c.key, 'light')?.brightness ?? 100))
-      .onSet(async v => { await this.client.setLight(c.id, { brightness: Number(v) }); this.patch(c.key, { brightness: Number(v) }); });
+      .onSet(async (v: CharacteristicValue) => { await this.client.setLight(c.id, { brightness: Number(v) }); this.patch(c.key, { brightness: Number(v) }); });
     this.configureEnergy(svc, c.key, c.state);
   }
 
@@ -322,7 +322,7 @@ export class ShellyDeviceAccessory {
         const state = this.getState(c.key, 'cover');
         return state?.targetPosition ?? state?.currentPosition ?? 0;
       }))
-      .onSet(async v => { await this.client.setCover(c.id, { action: 'position', position: Number(v) }); this.patch(c.key, { targetPosition: Number(v) }); });
+      .onSet(async (v: CharacteristicValue) => { await this.client.setCover(c.id, { action: 'position', position: Number(v) }); this.patch(c.key, { targetPosition: Number(v) }); });
     svc.getCharacteristic(this.platform.Characteristic.PositionState)
       .onGet(this.online(() => this.positionState(c.key)));
   }
